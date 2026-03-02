@@ -245,6 +245,8 @@ end
 
 ## Controller Patterns
 
+Controllers use the `ServiceHandler` concern (see SKILL.md) so actions stay clean.
+
 ### Standard API Controller
 
 ```ruby
@@ -254,18 +256,14 @@ module Api
   module V1
     class OrdersController < ApplicationController
       def create
-        case Orders::Place.call(**order_params)
-        in Success(order)
-          render json: OrderSerializer.new(order), status: :created
-        in Failure(validation: errors)
-          render json: { errors: }, status: :unprocessable_entity
-        in Failure(not_found: message)
-          render json: { error: message }, status: :not_found
-        in Failure(persistence: errors)
-          render json: { errors: }, status: :unprocessable_entity
-        in Failure
-          render json: { error: "Something went wrong" }, status: :internal_server_error
-        end
+        handle_service Orders::Place.call(**order_params),
+                       success_status: :created,
+                       serializer: OrderSerializer
+      end
+
+      def show
+        handle_service Orders::Find.call(id: params[:id]),
+                       serializer: OrderSerializer
       end
 
       private
@@ -279,30 +277,33 @@ module Api
 end
 ```
 
-### Shared Result Handler (optional)
+### Custom Handling for Non-Standard Failures
+
+When a service returns domain-specific failures beyond the standard set, override locally:
 
 ```ruby
-# app/controllers/concerns/api/result_handler.rb
 # frozen_string_literal: true
 
 module Api
-  module ResultHandler
-    extend ActiveSupport::Concern
+  module V1
+    class PaymentsController < ApplicationController
+      def create
+        result = Payments::Charge.call(**payment_params)
 
-    private
+        case result
+        in Failure(payment: message)
+          render json: { error: message }, status: :payment_required
+        in Failure(rate_limited: message)
+          render json: { error: message }, status: :too_many_requests
+        else
+          handle_service result, success_status: :created
+        end
+      end
 
-    def handle_result(result, success_status: :ok)
-      case result
-      in Success(value)
-        render json: value, status: success_status
-      in Failure(validation: errors)
-        render json: { errors: }, status: :unprocessable_entity
-      in Failure(not_found: message)
-        render json: { error: message }, status: :not_found
-      in Failure(unauthorized: message)
-        render json: { error: message }, status: :unauthorized
-      in Failure
-        render json: { error: "Internal error" }, status: :internal_server_error
+      private
+
+      def payment_params
+        params.require(:payment).permit(:amount, :currency).to_h.symbolize_keys
       end
     end
   end

@@ -48,6 +48,8 @@ app/
         {feature}able.rb                # include in model
   controllers/
     application_controller.rb
+    concerns/
+      service_handler.rb                # Result pattern matching concern
     api/
       v1/
         {resource}_controller.rb
@@ -434,23 +436,6 @@ Failure(persistence: user.errors.full_messages)
 Failure(unauthorized: "Not permitted")
 ```
 
-**Pattern match in controllers:**
-
-```ruby
-case Users::Create.call(**user_params)
-in Success(user)
-  render json: user, status: :created
-in Failure(validation: errors)
-  render json: { errors: }, status: :unprocessable_entity
-in Failure(not_found: message)
-  render json: { error: message }, status: :not_found
-in Failure(persistence: errors)
-  render json: { errors: }, status: :unprocessable_entity
-in Failure
-  render json: { error: "Something went wrong" }, status: :internal_server_error
-end
-```
-
 ### With Transactions
 
 Do notation raises `Dry::Monads::Do::Halt` on Failure, which triggers transaction rollback:
@@ -468,21 +453,61 @@ end
 
 ### Controller Integration
 
+Controllers MUST use the `ServiceHandler` concern -- never inline pattern matching in every action.
+
 ```ruby
+# app/controllers/concerns/service_handler.rb
+# frozen_string_literal: true
+
+module ServiceHandler
+  extend ActiveSupport::Concern
+
+  private
+
+  def handle_service(result, success_status: :ok, serializer: nil)
+    case result
+    in Success(value)
+      body = serializer ? serializer.new(value) : value
+      render json: body, status: success_status
+    in Failure(validation: errors)
+      render json: { errors: }, status: :unprocessable_entity
+    in Failure(not_found: message)
+      render json: { error: message }, status: :not_found
+    in Failure(unauthorized: message)
+      render json: { error: message }, status: :unauthorized
+    in Failure(persistence: errors)
+      render json: { errors: }, status: :unprocessable_entity
+    in Failure
+      render json: { error: "Something went wrong" }, status: :internal_server_error
+    end
+  end
+end
+```
+
+```ruby
+# app/controllers/application_controller.rb
+# frozen_string_literal: true
+
+class ApplicationController < ActionController::API
+  include ServiceHandler
+end
+```
+
+Now controllers are clean and focused:
+
+```ruby
+# app/controllers/api/v1/users_controller.rb
 # frozen_string_literal: true
 
 module Api
   module V1
     class UsersController < ApplicationController
       def create
-        case Users::Create.call(**user_params)
-        in Success(user)
-          render json: user, status: :created
-        in Failure(validation: errors)
-          render json: { errors: }, status: :unprocessable_entity
-        in Failure(persistence: errors)
-          render json: { errors: }, status: :unprocessable_entity
-        end
+        handle_service Users::Create.call(**user_params), success_status: :created
+      end
+
+      def show
+        handle_service Users::Find.call(id: params[:id])
       end
 
       private
@@ -491,6 +516,23 @@ module Api
         params.require(:user).permit(:name, :email).to_h.symbolize_keys
       end
     end
+  end
+end
+```
+
+For actions that need custom handling beyond the standard mapping, override locally:
+
+```ruby
+def create
+  result = Orders::Place.call(**order_params)
+
+  case result
+  in Success(order)
+    handle_service result, success_status: :created, serializer: OrderSerializer
+  in Failure(payment: message)
+    render json: { error: message }, status: :payment_required
+  else
+    handle_service result
   end
 end
 ```

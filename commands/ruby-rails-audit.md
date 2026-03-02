@@ -53,14 +53,18 @@ For each service in `app/services/`:
 
 For each controller:
 - [ ] No business logic (delegates to services)
-- [ ] Pattern matches on service results
+- [ ] Uses `handle_service` from ServiceHandler concern (no inline pattern matching)
+- [ ] Uses `before_action` for resource loading
 - [ ] Uses strong params
+- [ ] `ApplicationController` includes `ServiceHandler` and `ErrorHandler`
+- [ ] `app/controllers/concerns/service_handler.rb` exists
+- [ ] `app/controllers/concerns/error_handler.rb` exists
 
 ### 6. Naming Audit
 
 Check all files follow naming conventions:
 - [ ] Concerns: `{Feature}able` suffix
-- [ ] Services: `{Verb}{Noun}` pattern
+- [ ] Services: `{Domain}::{Action}` pattern (e.g., `Users::Create`)
 - [ ] Actions: in `actions/` subdirectory
 - [ ] Performers: `{Noun}Performer` suffix in `performers/`
 

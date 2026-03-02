@@ -245,9 +245,13 @@ end
 
 ## Controller Patterns
 
-Controllers use the `ServiceHandler` concern (see SKILL.md) so actions stay clean.
+Controllers rely on two concerns and `before_action` callbacks to stay thin:
 
-### Standard API Controller
+- **`ErrorHandler`** -- `rescue_from` for exceptions (`RecordNotFound`, `ParameterMissing`, etc.)
+- **`ServiceHandler`** -- `handle_service` for pattern matching service results
+- **`before_action`** -- resource loading, authentication, authorization
+
+### Full CRUD Controller
 
 ```ruby
 # frozen_string_literal: true
@@ -255,21 +259,41 @@ Controllers use the `ServiceHandler` concern (see SKILL.md) so actions stay clea
 module Api
   module V1
     class OrdersController < ApplicationController
+      before_action :set_order, only: %i[show update destroy]
+
+      def index
+        handle_service Orders::List.call(user_id: params[:user_id]),
+                       serializer: OrderSerializer
+      end
+
+      def show
+        handle_service Orders::Find.call(order: @order),
+                       serializer: OrderSerializer
+      end
+
       def create
         handle_service Orders::Place.call(**order_params),
                        success_status: :created,
                        serializer: OrderSerializer
       end
 
-      def show
-        handle_service Orders::Find.call(id: params[:id]),
-                       serializer: OrderSerializer
+      def update
+        handle_service Orders::Update.call(order: @order, **order_params)
+      end
+
+      def destroy
+        handle_service Orders::Cancel.call(order: @order),
+                       success_status: :no_content
       end
 
       private
 
+      def set_order
+        @order = Order.find(params[:id])
+      end
+
       def order_params
-        params.require(:order).permit(:user_id, :product_id, :quantity)
+        params.require(:order).permit(:product_id, :quantity)
           .to_h.symbolize_keys
       end
     end
@@ -277,9 +301,11 @@ module Api
 end
 ```
 
-### Custom Handling for Non-Standard Failures
+`set_order` uses `find` which raises `RecordNotFound` -- the `ErrorHandler` concern renders 404 automatically. No rescue needed in the action.
 
-When a service returns domain-specific failures beyond the standard set, override locally:
+### Custom Handling for Domain-Specific Failures
+
+When a service returns failures beyond the standard set, handle them locally and fall back:
 
 ```ruby
 # frozen_string_literal: true
@@ -304,6 +330,56 @@ module Api
 
       def payment_params
         params.require(:payment).permit(:amount, :currency).to_h.symbolize_keys
+      end
+    end
+  end
+end
+```
+
+### Authentication / Authorization via before_action
+
+```ruby
+# frozen_string_literal: true
+
+module Api
+  module V1
+    class BaseController < ApplicationController
+      before_action :authenticate_user!
+
+      private
+
+      def authenticate_user!
+        @current_user = User.find_by(token: request.headers["Authorization"]&.remove("Bearer "))
+        render json: { error: "Unauthorized" }, status: :unauthorized unless @current_user
+      end
+
+      attr_reader :current_user
+    end
+  end
+end
+```
+
+Resource-scoped controllers inherit and add their own callbacks:
+
+```ruby
+# frozen_string_literal: true
+
+module Api
+  module V1
+    class ProjectsController < BaseController
+      before_action :set_project, only: %i[show update destroy]
+      before_action :authorize_project!, only: %i[update destroy]
+
+      # ... actions using handle_service
+
+      private
+
+      def set_project
+        @project = Project.find(params[:id])
+      end
+
+      def authorize_project!
+        render json: { error: "Forbidden" }, status: :forbidden unless @project.owner == current_user
       end
     end
   end

@@ -49,6 +49,7 @@ app/
   controllers/
     application_controller.rb
     concerns/
+      error_handler.rb                  # rescue_from for common exceptions
       service_handler.rb                # Result pattern matching concern
     api/
       v1/
@@ -467,6 +468,8 @@ module ServiceHandler
   def handle_service(result, success_status: :ok, serializer: nil)
     case result
     in Success(value)
+      return head(:no_content) if success_status == :no_content
+
       body = serializer ? serializer.new(value) : value
       render json: body, status: success_status
     in Failure(validation: errors)
@@ -484,16 +487,51 @@ module ServiceHandler
 end
 ```
 
+### Error Handler Concern
+
+Catch exceptions globally so controllers and services don't need rescue boilerplate:
+
+```ruby
+# app/controllers/concerns/error_handler.rb
+# frozen_string_literal: true
+
+module ErrorHandler
+  extend ActiveSupport::Concern
+
+  included do
+    rescue_from ActiveRecord::RecordNotFound do |e|
+      render json: { error: e.message }, status: :not_found
+    end
+
+    rescue_from ActionController::ParameterMissing do |e|
+      render json: { error: e.message }, status: :bad_request
+    end
+
+    rescue_from ActiveRecord::RecordInvalid do |e|
+      render json: { errors: e.record.errors.full_messages }, status: :unprocessable_entity
+    end
+
+  end
+end
+```
+
+### ApplicationController
+
+Wire up all concerns and shared callbacks:
+
 ```ruby
 # app/controllers/application_controller.rb
 # frozen_string_literal: true
 
 class ApplicationController < ActionController::API
   include ServiceHandler
+  include ErrorHandler
 end
 ```
 
-Now controllers are clean and focused:
+### before_action for Resource Loading
+
+Use `before_action` to DRY up resource lookup:
 
 ```ruby
 # app/controllers/api/v1/users_controller.rb
@@ -502,15 +540,33 @@ Now controllers are clean and focused:
 module Api
   module V1
     class UsersController < ApplicationController
+      before_action :set_user, only: %i[show update destroy]
+
+      def index
+        handle_service Users::List.call, serializer: UserSerializer
+      end
+
+      def show
+        handle_service Users::Find.call(user: @user), serializer: UserSerializer
+      end
+
       def create
         handle_service Users::Create.call(**user_params), success_status: :created
       end
 
-      def show
-        handle_service Users::Find.call(id: params[:id])
+      def update
+        handle_service Users::Update.call(user: @user, **user_params)
+      end
+
+      def destroy
+        handle_service Users::Destroy.call(user: @user), success_status: :no_content
       end
 
       private
+
+      def set_user
+        @user = User.find(params[:id])
+      end
 
       def user_params
         params.require(:user).permit(:name, :email).to_h.symbolize_keys
@@ -520,19 +576,19 @@ module Api
 end
 ```
 
-For actions that need custom handling beyond the standard mapping, override locally:
+`set_user` uses `find` (not `find_by`) -- the `ErrorHandler` concern catches `RecordNotFound` and renders 404 automatically.
+
+For actions that need custom failure handling beyond the standard set:
 
 ```ruby
 def create
-  result = Orders::Place.call(**order_params)
+  result = Payments::Charge.call(**payment_params)
 
   case result
-  in Success(order)
-    handle_service result, success_status: :created, serializer: OrderSerializer
   in Failure(payment: message)
     render json: { error: message }, status: :payment_required
   else
-    handle_service result
+    handle_service result, success_status: :created
   end
 end
 ```

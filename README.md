@@ -73,14 +73,14 @@ Failure(not_found: "User not found")
 Failure(persistence: user.errors.full_messages)
 ```
 
-### Controller Pattern Matching
+### Thin Controllers with Concerns
 
 ```ruby
-case Users::Create.call(**user_params)
-in Success(user)
-  render json: user, status: :created
-in Failure(validation: errors)
-  render json: { errors: }, status: :unprocessable_entity
+# Controllers use handle_service (from ServiceHandler concern)
+def create
+  handle_service Users::Create.call(**user_params),
+                 success_status: :created,
+                 serializer: UserSerializer
 end
 ```
 

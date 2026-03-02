@@ -98,6 +98,16 @@ Create the foundation files from SKILL.md:
 - `app/services/base_service.rb`
 - `app/contracts/application_contract.rb`
 - `config/initializers/dry.rb`
+- `app/controllers/concerns/service_handler.rb`
+- `app/controllers/concerns/error_handler.rb`
+
+Wire up `ApplicationController` to include both concerns:
+```ruby
+class ApplicationController < ActionController::API  # or Base for non-API
+  include ServiceHandler
+  include ErrorHandler
+end
+```
 
 ### 7. Final Steps
 
@@ -123,6 +133,9 @@ Configured:
   - BaseService with dry-monads Do notation
   - ApplicationContract base class
   - Types module
+  - ServiceHandler concern (handle_service for result pattern matching)
+  - ErrorHandler concern (rescue_from for common exceptions)
+  - ApplicationController wired with both concerns
 
 Ready to build.
 ```

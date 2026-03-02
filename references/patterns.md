@@ -8,13 +8,13 @@ The standard flow for any user-facing operation:
 
 ```
 Controller -> Service.call(params)
-                |-> Contract validates params
-                |-> Business logic executes
-                |-> Returns Success/Failure (hash-style)
-           <- Pattern match result, render response
+                |-> Contract validates params (raises on failure)
+                |-> Business logic executes (raises on failure)
+                |-> Returns result value
+           <- Render response (ErrorHandler catches exceptions)
 ```
 
-### Pattern: Chained Services with Do Notation
+### Pattern: Multi-Step Service
 
 ```ruby
 # app/services/orders/place.rb
@@ -27,51 +27,47 @@ module Orders
     option :quantity,   type: Types::Strict::Integer
 
     def call
-      values  = yield validate
-      user    = yield find_user(values[:user_id])
-      product = yield find_product(values[:product_id])
-      order   = yield create_order(user, product, values)
-      yield send_confirmation(order)
-
-      Success(order)
+      values  = validate!
+      user    = find_user!(values[:user_id])
+      product = find_product!(values[:product_id])
+      order   = create_order!(user, product, values)
+      send_confirmation(order)
+      order
     end
 
     private
 
-    def validate
+    def validate!
       result = Orders::PlaceContract.new.call(user_id:, product_id:, quantity:)
-      result.success? ? Success(result.to_h) : Failure(validation: result.errors.to_h)
+      raise ValidationError, result.errors.to_h unless result.success?
+
+      result.to_h
     end
 
-    def find_user(id)
-      user = User.find_by(id:)
-      user ? Success(user) : Failure(not_found: "User not found")
+    def find_user!(id)
+      User.find_by!(id:)
     end
 
-    def find_product(id)
-      product = Product.find_by(id:)
-      product ? Success(product) : Failure(not_found: "Product not found")
+    def find_product!(id)
+      Product.find_by!(id:)
     end
 
-    def create_order(user, product, values)
-      order = Order.create(user:, product:, quantity: values[:quantity])
-      order.persisted? ? Success(order) : Failure(persistence: order.errors.full_messages)
+    def create_order!(user, product, values)
+      Order.create!(user:, product:, quantity: values[:quantity])
     end
 
     def send_confirmation(order)
       OrderMailer.confirmation(order).deliver_later
-      Success(order)
     rescue StandardError => e
       Rails.logger.error("Order confirmation email failed: #{e.message}")
-      Success(order)
     end
   end
 end
 ```
 
-### Pattern: Transactions with Do Notation
+### Pattern: Transactions
 
-Do notation raises `Dry::Monads::Do::Halt` on Failure, which triggers transaction rollback:
+Use `ActiveRecord::Base.transaction` for operations that must succeed together. Bang methods (`update!`, `create!`) raise inside transactions, triggering rollback:
 
 ```ruby
 # app/services/accounts/transfer.rb
@@ -84,36 +80,24 @@ module Accounts
     option :amount,  type: Types::Strict::Decimal
 
     def call
-      ActiveRecord::Base.transaction do
-        from = yield find_account(from_id)
-        to   = yield find_account(to_id)
-        yield check_balance(from, amount)
-        yield debit(from, amount)
-        yield credit(to, amount)
+      validate!
 
-        Success({ from:, to:, amount: })
+      ActiveRecord::Base.transaction do
+        from = Account.lock.find_by!(id: from_id)
+        to   = Account.lock.find_by!(id: to_id)
+        raise InsufficientFundsError, from.id if from.balance < amount
+
+        from.update!(balance: from.balance - amount)
+        to.update!(balance: to.balance + amount)
+        { from:, to:, amount: }
       end
     end
 
     private
 
-    def find_account(id)
-      account = Account.lock.find_by(id:)
-      account ? Success(account) : Failure(not_found: "Account #{id} not found")
-    end
-
-    def check_balance(account, amount)
-      account.balance >= amount ? Success() : Failure(insufficient_funds: account.id)
-    end
-
-    def debit(account, amount)
-      account.update!(balance: account.balance - amount)
-      Success(account)
-    end
-
-    def credit(account, amount)
-      account.update!(balance: account.balance + amount)
-      Success(account)
+    def validate!
+      result = Accounts::TransferContract.new.call(from_id:, to_id:, amount:)
+      raise ValidationError, result.errors.to_h unless result.success?
     end
   end
 end
@@ -132,23 +116,22 @@ module Payments
     option :gateway, default: proc { StripeGateway.new }
 
     def call
-      charge = yield process_charge
-      yield update_records(charge)
-      Success(charge)
+      charge = process_charge!
+      record_payment!(charge)
+      charge
     end
 
     private
 
-    def process_charge
+    def process_charge!
       result = gateway.charge(amount:, customer_id: user.stripe_id)
-      result.success? ? Success(result) : Failure(payment: result.error)
+      raise PaymentError, result.error unless result.success?
+
+      result
     end
 
-    def update_records(charge)
+    def record_payment!(charge)
       Payment.create!(user:, amount:, external_id: charge.id)
-      Success()
-    rescue ActiveRecord::RecordInvalid => e
-      Failure(persistence: e.message)
     end
   end
 end
@@ -169,8 +152,12 @@ RSpec.describe Payments::Charge do
         .and_return(OpenStruct.new(success?: true, id: "ch_1"))
     end
 
-    it "returns Success" do
-      expect(service.call).to be_success
+    it "returns the charge" do
+      expect(service.call).to respond_to(:id)
+    end
+
+    it "creates a payment record" do
+      expect { service.call }.to change(Payment, :count).by(1)
     end
   end
 
@@ -180,10 +167,8 @@ RSpec.describe Payments::Charge do
         .and_return(OpenStruct.new(success?: false, error: "Card declined"))
     end
 
-    it "returns Failure with payment error" do
-      result = service.call
-      expect(result).to be_failure
-      expect(result.failure).to have_key(:payment)
+    it "raises PaymentError" do
+      expect { service.call }.to raise_error(PaymentError, "Card declined")
     end
   end
 end
@@ -200,42 +185,30 @@ module Reports
     option :report_id, type: Types::Strict::String
 
     def call
-      report = yield find_report
-      data   = yield collect_data(report)
-      file   = yield generate_file(report, data)
-      yield attach_file(report, file)
-      yield notify_user(report)
-
-      Success(report.reload)
+      report = Report.find_by!(id: report_id)
+      data   = collect_data(report)
+      file   = generate_file(report, data)
+      attach_file(report, file)
+      notify_user(report)
+      report.reload
     end
 
     private
 
-    def find_report
-      report = Report.find_by(id: report_id)
-      report ? Success(report) : Failure(not_found: "Report not found")
-    end
-
     def collect_data(report)
-      data = report.data_source.query(report.parameters)
-      Success(data)
-    rescue StandardError => e
-      Failure(data_error: e.message)
+      report.data_source.query(report.parameters)
     end
 
     def generate_file(report, data)
-      file = ReportGenerator.new(report.format).generate(data)
-      Success(file)
+      ReportGenerator.new(report.format).generate(data)
     end
 
     def attach_file(report, file)
       report.file.attach(io: file, filename: "#{report.name}.pdf")
-      Success()
     end
 
     def notify_user(report)
       ReportMailer.ready(report).deliver_later
-      Success()
     end
   end
 end
@@ -245,11 +218,7 @@ end
 
 ## Controller Patterns
 
-Controllers rely on two concerns and `before_action` callbacks to stay thin:
-
-- **`ErrorHandler`** -- `rescue_from` for exceptions (`RecordNotFound`, `ParameterMissing`, etc.)
-- **`ServiceHandler`** -- `handle_service` for pattern matching service results
-- **`before_action`** -- resource loading, authentication, authorization
+Controllers rely on the `ErrorHandler` concern and `before_action` callbacks to stay thin. No pattern matching, no result handling -- just call and render.
 
 ### Full CRUD Controller
 
@@ -262,28 +231,27 @@ module Api
       before_action :set_order, only: %i[show update destroy]
 
       def index
-        handle_service Orders::List.call(user_id: params[:user_id]),
-                       serializer: OrderSerializer
+        orders = Orders::List.call(user_id: params[:user_id])
+        render json: orders
       end
 
       def show
-        handle_service Orders::Find.call(order: @order),
-                       serializer: OrderSerializer
+        render json: @order
       end
 
       def create
-        handle_service Orders::Place.call(**order_params),
-                       success_status: :created,
-                       serializer: OrderSerializer
+        order = Orders::Place.call(**order_params)
+        render json: order, status: :created
       end
 
       def update
-        handle_service Orders::Update.call(order: @order, **order_params)
+        order = Orders::Update.call(order: @order, **order_params)
+        render json: order
       end
 
       def destroy
-        handle_service Orders::Cancel.call(order: @order),
-                       success_status: :no_content
+        Orders::Cancel.call(order: @order)
+        head :no_content
       end
 
       private
@@ -303,9 +271,9 @@ end
 
 `set_order` uses `find` which raises `RecordNotFound` -- the `ErrorHandler` concern renders 404 automatically. No rescue needed in the action.
 
-### Custom Handling for Domain-Specific Failures
+### Domain-Specific Errors
 
-When a service returns failures beyond the standard set, handle them locally and fall back:
+When a service raises domain-specific errors, add them to ErrorHandler or rescue locally:
 
 ```ruby
 # frozen_string_literal: true
@@ -314,16 +282,10 @@ module Api
   module V1
     class PaymentsController < ApplicationController
       def create
-        result = Payments::Charge.call(**payment_params)
-
-        case result
-        in Failure(payment: message)
-          render json: { error: message }, status: :payment_required
-        in Failure(rate_limited: message)
-          render json: { error: message }, status: :too_many_requests
-        else
-          handle_service result, success_status: :created
-        end
+        charge = Payments::Charge.call(**payment_params)
+        render json: charge, status: :created
+      rescue PaymentError => e
+        render json: { error: e.message }, status: :payment_required
       end
 
       private
@@ -370,7 +332,7 @@ module Api
       before_action :set_project, only: %i[show update destroy]
       before_action :authorize_project!, only: %i[update destroy]
 
-      # ... actions using handle_service
+      # ... actions: call service, render result
 
       private
 
@@ -505,9 +467,9 @@ def create
 end
 ```
 
-CORRECT: Move to a service. Controller only handles HTTP concerns.
+CORRECT: Move to a service. Controller only calls the service and renders.
 
-### Exceptions for Flow Control
+### Swallowing Exceptions Silently
 
 WRONG:
 ```ruby
@@ -518,11 +480,10 @@ rescue ActiveRecord::RecordNotFound
 end
 ```
 
-CORRECT: Use Result monads:
+CORRECT: Let exceptions propagate. ErrorHandler deals with them:
 ```ruby
-def find_user(id)
-  user = User.find_by(id:)
-  user ? Success(user) : Failure(not_found: "User #{id} not found")
+def find_user!(id)
+  User.find_by!(id:)
 end
 ```
 
@@ -600,9 +561,9 @@ RSpec.describe Users::Create do
   let(:params) { { name: "Jane", email: "jane@example.com" } }
 
   describe "success" do
-    it "creates user and returns Success" do
-      expect(result).to be_success
-      expect(result.value!).to be_a(User)
+    it "creates user and returns it" do
+      expect(result).to be_a(User)
+      expect(result).to be_persisted
     end
 
     it "sends welcome email" do
@@ -614,9 +575,8 @@ RSpec.describe Users::Create do
     context "with invalid params" do
       let(:params) { { name: "", email: "" } }
 
-      it "returns Failure with validation errors" do
-        expect(result).to be_failure
-        expect(result.failure).to have_key(:validation)
+      it "raises ValidationError" do
+        expect { result }.to raise_error(ValidationError)
       end
     end
   end

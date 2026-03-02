@@ -1,11 +1,11 @@
 ---
 name: ruby-rails
-description: "REQUIRED for all Ruby and Ruby on Rails development. Use when: writing Ruby code, creating Rails models/controllers/services, running migrations, generating scaffolds, working with ActiveRecord, configuring gems, writing RSpec tests, setting up dry-rb gems, creating service objects, working with concerns/modules, or any task involving .rb files or a Rails project. Triggers: Ruby, Rails, ActiveRecord, RSpec, dry-monads, dry-types, dry-validation, Gemfile, migration, model, controller, service object, concern, RuboCop, Sidekiq, background jobs."
+description: "REQUIRED for all Ruby and Ruby on Rails development. Use when: writing Ruby code, creating Rails models/controllers/services, running migrations, generating scaffolds, working with ActiveRecord, configuring gems, writing RSpec tests, setting up dry-rb gems, creating service objects, working with concerns/modules, or any task involving .rb files or a Rails project. Triggers: Ruby, Rails, ActiveRecord, RSpec, dry-types, dry-validation, Gemfile, migration, model, controller, service object, concern, RuboCop, Sidekiq, background jobs."
 ---
 
 # Ruby on Rails Development Skill
 
-Build clean, simple, idiomatic Ruby on Rails applications using dry-rb patterns, strict conventions, and generators.
+Build clean, simple, idiomatic Ruby on Rails applications using dry-rb for validation and typing, strict conventions, and generators.
 
 ## Core Principles
 
@@ -13,8 +13,9 @@ Build clean, simple, idiomatic Ruby on Rails applications using dry-rb patterns,
 2. **Generators first** -- NEVER manually create files that Rails generators can produce (migrations, models, controllers, jobs, mailers, etc.).
 3. **UUIDs everywhere** -- All primary keys and foreign keys use UUIDs by default.
 4. **Linting is mandatory** -- Every project must have RuboCop properly configured before writing code.
-5. **dry-rb for services** -- Use dry-monads, dry-initializer, dry-types, and dry-validation for service objects and business logic.
+5. **dry-rb for validation and typing** -- Use dry-validation (contracts), dry-types (type system), dry-initializer (typed constructor DSL).
 6. **Thin models, thin controllers** -- Business logic lives in services. Models stay under 100 lines.
+7. **Plain Ruby services** -- Services return values on success, raise exceptions on failure. No monads, no wrappers.
 
 ---
 
@@ -26,6 +27,7 @@ Before writing ANY code in a Rails project, verify:
 2. **UUID configured?** -- Check `config/initializers/generators.rb` for UUID primary key config. If missing, set it up first.
 3. **Types module exists?** -- Check for `app/types.rb`. If missing, create it.
 4. **Base service exists?** -- Check for `app/services/base_service.rb`. If missing, create it.
+5. **Error classes exist?** -- Check for `app/errors/`. If missing, create them.
 
 ---
 
@@ -37,6 +39,17 @@ app/
     application_contract.rb
     {domain}/
       {action}_contract.rb
+  controllers/
+    application_controller.rb
+    concerns/
+      error_handler.rb                  # rescue_from for exceptions
+    api/
+      v1/
+        {resource}_controller.rb
+  errors/                               # Custom error classes
+    service_error.rb
+    validation_error.rb
+    not_found_error.rb
   models/
     application_record.rb
     {model}.rb                          # Thin model (<100 lines)
@@ -46,14 +59,6 @@ app/
     concerns/
       {model_plural}/
         {feature}able.rb                # include in model
-  controllers/
-    application_controller.rb
-    concerns/
-      error_handler.rb                  # rescue_from for common exceptions
-      service_handler.rb                # Result pattern matching concern
-    api/
-      v1/
-        {resource}_controller.rb
   services/
     base_service.rb
     {domain}/
@@ -71,7 +76,6 @@ app/
 config/
   initializers/
     generators.rb                       # UUID config
-    dry.rb                              # dry-validation extensions
 ```
 
 ---
@@ -309,7 +313,7 @@ end
 
 WRONG -- Concern without `-able` suffix:
 ```ruby
-module Events::Filter; end           # WRONG name
+module Events::Filter; end           # WRONG name and form
 ```
 
 WRONG -- Class methods in concerns:
@@ -332,7 +336,6 @@ has_many :tags                          # WRONG: must specify dependent:
 ### Required Gems
 
 ```ruby
-gem "dry-monads",      "~> 1.6"
 gem "dry-validation",  "~> 1.10"
 gem "dry-types",       "~> 1.7"
 gem "dry-initializer", "~> 3.1"
@@ -358,7 +361,6 @@ end
 
 class BaseService
   extend Dry::Initializer
-  include Dry::Monads[:result, :do]
 
   def self.call(...)
     new(...).call
@@ -375,16 +377,39 @@ class ApplicationContract < Dry::Validation::Contract
 end
 ```
 
+### Custom Error Classes
+
 ```ruby
-# config/initializers/dry.rb
+# app/errors/service_error.rb
 # frozen_string_literal: true
 
-require "dry/validation"
+class ServiceError < StandardError; end
+```
 
-Dry::Validation.load_extensions(:monads)
+```ruby
+# app/errors/validation_error.rb
+# frozen_string_literal: true
+
+class ValidationError < ServiceError
+  attr_reader :errors
+
+  def initialize(errors)
+    @errors = errors
+    super("Validation failed")
+  end
+end
+```
+
+```ruby
+# app/errors/not_found_error.rb
+# frozen_string_literal: true
+
+class NotFoundError < ServiceError; end
 ```
 
 ### Service Example
+
+Services return values on success, raise on failure. No wrappers.
 
 ```ruby
 # app/services/users/create.rb
@@ -396,100 +421,43 @@ module Users
     option :email, type: Types::Strict::String
 
     def call
-      values = yield validate
-      user   = yield persist(values)
-      yield send_welcome(user)
-
-      Success(user)
+      values = validate!
+      user = User.create!(values)
+      UserMailer.welcome(user).deliver_later
+      user
     end
 
     private
 
-    def validate
+    def validate!
       result = Users::CreateContract.new.call(name:, email:)
-      result.success? ? Success(result.to_h) : Failure(validation: result.errors.to_h)
-    end
+      raise ValidationError, result.errors.to_h unless result.success?
 
-    def persist(values)
-      user = User.create(values)
-      user.persisted? ? Success(user) : Failure(persistence: user.errors.full_messages)
-    end
-
-    def send_welcome(user)
-      UserMailer.welcome(user).deliver_later
-      Success(user)
-    rescue StandardError => e
-      Rails.logger.error("Welcome email failed: #{e.message}")
-      Success(user) # non-critical, don't fail the operation
+      result.to_h
     end
   end
 end
-```
-
-### Failure Value Convention
-
-**Always use hash-style failures** with a descriptive symbol key:
-
-```ruby
-Failure(validation: result.errors.to_h)
-Failure(not_found: "User #{id} not found")
-Failure(persistence: user.errors.full_messages)
-Failure(unauthorized: "Not permitted")
 ```
 
 ### With Transactions
 
-Do notation raises `Dry::Monads::Do::Halt` on Failure, which triggers transaction rollback:
-
 ```ruby
 def call
   ActiveRecord::Base.transaction do
-    account = yield find_account(id)
-    yield debit(account, amount)
-    yield record_transfer(account, amount)
-    Success(account)
+    account = Account.lock.find_by!(id: from_id)
+    target  = Account.lock.find_by!(id: to_id)
+    account.update!(balance: account.balance - amount)
+    target.update!(balance: target.balance + amount)
+    { from: account, to: target, amount: }
   end
 end
 ```
 
-### Controller Integration
-
-Controllers MUST use the `ServiceHandler` concern -- never inline pattern matching in every action.
-
-```ruby
-# app/controllers/concerns/service_handler.rb
-# frozen_string_literal: true
-
-module ServiceHandler
-  extend ActiveSupport::Concern
-
-  private
-
-  def handle_service(result, success_status: :ok, serializer: nil)
-    case result
-    in Success(value)
-      return head(:no_content) if success_status == :no_content
-
-      body = serializer ? serializer.new(value) : value
-      render json: body, status: success_status
-    in Failure(validation: errors)
-      render json: { errors: }, status: :unprocessable_entity
-    in Failure(not_found: message)
-      render json: { error: message }, status: :not_found
-    in Failure(unauthorized: message)
-      render json: { error: message }, status: :unauthorized
-    in Failure(persistence: errors)
-      render json: { errors: }, status: :unprocessable_entity
-    in Failure
-      render json: { error: "Something went wrong" }, status: :internal_server_error
-    end
-  end
-end
-```
+`find_by!` raises `RecordNotFound`, `update!` raises `RecordInvalid` -- ErrorHandler catches both.
 
 ### Error Handler Concern
 
-Catch exceptions globally so controllers and services don't need rescue boilerplate:
+Catches all exceptions globally so controllers stay clean:
 
 ```ruby
 # app/controllers/concerns/error_handler.rb
@@ -503,35 +471,39 @@ module ErrorHandler
       render json: { error: e.message }, status: :not_found
     end
 
-    rescue_from ActionController::ParameterMissing do |e|
-      render json: { error: e.message }, status: :bad_request
-    end
-
     rescue_from ActiveRecord::RecordInvalid do |e|
       render json: { errors: e.record.errors.full_messages }, status: :unprocessable_entity
     end
 
+    rescue_from ActionController::ParameterMissing do |e|
+      render json: { error: e.message }, status: :bad_request
+    end
+
+    rescue_from ValidationError do |e|
+      render json: { errors: e.errors }, status: :unprocessable_entity
+    end
+
+    rescue_from NotFoundError do |e|
+      render json: { error: e.message }, status: :not_found
+    end
   end
 end
 ```
 
 ### ApplicationController
 
-Wire up all concerns and shared callbacks:
-
 ```ruby
 # app/controllers/application_controller.rb
 # frozen_string_literal: true
 
 class ApplicationController < ActionController::API
-  include ServiceHandler
   include ErrorHandler
 end
 ```
 
-### before_action for Resource Loading
+### Controller Example
 
-Use `before_action` to DRY up resource lookup:
+Controllers are trivial: call service, render result. Errors are handled by ErrorHandler.
 
 ```ruby
 # app/controllers/api/v1/users_controller.rb
@@ -543,23 +515,27 @@ module Api
       before_action :set_user, only: %i[show update destroy]
 
       def index
-        handle_service Users::List.call, serializer: UserSerializer
+        users = Users::List.call
+        render json: users
       end
 
       def show
-        handle_service Users::Find.call(user: @user), serializer: UserSerializer
+        render json: @user
       end
 
       def create
-        handle_service Users::Create.call(**user_params), success_status: :created
+        user = Users::Create.call(**user_params)
+        render json: user, status: :created
       end
 
       def update
-        handle_service Users::Update.call(user: @user, **user_params)
+        user = Users::Update.call(user: @user, **user_params)
+        render json: user
       end
 
       def destroy
-        handle_service Users::Destroy.call(user: @user), success_status: :no_content
+        Users::Destroy.call(user: @user)
+        head :no_content
       end
 
       private
@@ -576,22 +552,7 @@ module Api
 end
 ```
 
-`set_user` uses `find` (not `find_by`) -- the `ErrorHandler` concern catches `RecordNotFound` and renders 404 automatically.
-
-For actions that need custom failure handling beyond the standard set:
-
-```ruby
-def create
-  result = Payments::Charge.call(**payment_params)
-
-  case result
-  in Failure(payment: message)
-    render json: { error: message }, status: :payment_required
-  else
-    handle_service result, success_status: :created
-  end
-end
-```
+`set_user` uses `find` -- ErrorHandler catches `RecordNotFound` and renders 404 automatically.
 
 ---
 
@@ -667,18 +628,19 @@ RSpec.describe Users::Create do
   let(:params) { { name: "Jane", email: "jane@example.com" } }
 
   context "with valid params" do
-    it "returns Success with user" do
-      expect(result).to be_success
-      expect(result.value!).to be_a(User)
+    it "creates a user" do
+      expect(result).to be_a(User)
+      expect(result).to be_persisted
     end
   end
 
   context "with invalid email" do
     let(:params) { { name: "Jane", email: "invalid" } }
 
-    it "returns Failure with validation errors" do
-      expect(result).to be_failure
-      expect(result.failure).to have_key(:validation)
+    it "raises ValidationError" do
+      expect { result }.to raise_error(ValidationError) do |e|
+        expect(e.errors).to have_key(:email)
+      end
     end
   end
 end
@@ -811,9 +773,7 @@ class ProcessPaymentJob < ApplicationJob
 
   def perform(order_id)
     order = Order.find(order_id)
-    result = Payments::Charge.call(order:)
-
-    Rails.logger.error("Payment failed: #{result.failure}") if result.failure?
+    Payments::Charge.call(order:)
   end
 end
 ```
@@ -828,5 +788,5 @@ end
 
 ## Deep Dives
 
-- `references/dry-rb.md` -- Complete dry-rb gem reference (types, monads, validation, struct, initializer, configurable)
+- `references/dry-rb.md` -- Complete dry-rb gem reference (types, validation, struct, initializer, configurable)
 - `references/patterns.md` -- Advanced patterns, anti-patterns, and real-world examples

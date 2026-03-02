@@ -1,6 +1,6 @@
 # Ruby on Rails Skill for Claude Code
 
-A comprehensive Claude Code skill for Ruby on Rails development with dry-rb patterns, strict conventions, and generators-first workflow.
+A comprehensive Claude Code skill for Ruby on Rails development with dry-rb typing/validation, strict conventions, and generators-first workflow.
 
 ## Installation
 
@@ -26,9 +26,10 @@ Core conventions enforced:
 - **Generators first** -- never manually create migrations, models, controllers, etc.
 - **UUID primary/foreign keys** everywhere (PostgreSQL pgcrypto)
 - **RuboCop + Brakeman** mandatory on every project
-- **dry-rb service stack** -- dry-monads (Do notation), dry-initializer (typed options), dry-validation (contracts), dry-types
+- **dry-rb for typing and validation** -- dry-types, dry-initializer (typed options), dry-validation (contracts)
+- **Plain Ruby services** -- return values on success, raise on failure. No monads.
 - **Thin models (<100 lines)** with concerns (`-able` suffix) and class method modules
-- **Thin controllers** that delegate to services and pattern match results
+- **Thin controllers** -- call service, render result. ErrorHandler catches exceptions.
 - **Clean, simple, idiomatic Ruby** -- guard clauses, safe navigation, frozen string literals
 
 ### Commands
@@ -43,7 +44,7 @@ Core conventions enforced:
 
 | File | Description |
 |------|-------------|
-| `references/dry-rb.md` | Complete API reference for dry-types, dry-struct, dry-validation, dry-monads, dry-initializer, dry-configurable, dry-auto_inject, dry-system |
+| `references/dry-rb.md` | Complete API reference for dry-types, dry-struct, dry-validation, dry-initializer, dry-configurable |
 | `references/patterns.md` | Advanced service patterns, controller patterns, model patterns, anti-patterns, and testing patterns |
 
 ## Key Patterns
@@ -57,31 +58,29 @@ module Users
     option :email, type: Types::Strict::String
 
     def call
-      values = yield validate
-      user   = yield persist(values)
-      Success(user)
+      values = validate!
+      User.create!(values)
     end
   end
 end
 ```
 
-### Failure Convention (hash-style)
+### Thin Controllers
 
 ```ruby
-Failure(validation: errors)
-Failure(not_found: "User not found")
-Failure(persistence: user.errors.full_messages)
+def create
+  user = Users::Create.call(**user_params)
+  render json: user, status: :created
+end
 ```
 
-### Thin Controllers with Concerns
+### ErrorHandler Catches Exceptions
 
 ```ruby
-# Controllers use handle_service (from ServiceHandler concern)
-def create
-  handle_service Users::Create.call(**user_params),
-                 success_status: :created,
-                 serializer: UserSerializer
-end
+# ValidationError  -> 422
+# RecordNotFound   -> 404
+# RecordInvalid    -> 422
+# ParameterMissing -> 400
 ```
 
 ## License

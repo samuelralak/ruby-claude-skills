@@ -18,10 +18,12 @@ Check for the presence and correctness of:
 - [ ] `.rubocop.yml` exists and includes rubocop-rails, rubocop-rspec, rubocop-performance
 - [ ] `config/initializers/generators.rb` configures UUID primary keys
 - [ ] `app/types.rb` exists with `Dry.Types()` inclusion
-- [ ] `app/services/base_service.rb` exists with dry-monads + dry-initializer
+- [ ] `app/services/base_service.rb` exists with dry-initializer
 - [ ] `app/contracts/application_contract.rb` exists
-- [ ] `config/initializers/dry.rb` loads monads extension
-- [ ] Gemfile includes all required dry-rb gems
+- [ ] `app/errors/` contains custom error classes (ServiceError, ValidationError, NotFoundError)
+- [ ] `app/controllers/concerns/error_handler.rb` exists with rescue_from blocks
+- [ ] `ApplicationController` includes `ErrorHandler`
+- [ ] Gemfile includes required dry-rb gems (dry-validation, dry-types, dry-initializer, dry-struct)
 
 ### 2. Migration Audit
 
@@ -43,22 +45,20 @@ For each model in `app/models/`:
 ### 4. Service Audit
 
 For each service in `app/services/`:
-- [ ] Extends BaseService or uses dry-monads + dry-initializer
+- [ ] Extends BaseService or uses dry-initializer
 - [ ] Uses typed options (Types::Strict::*)
-- [ ] Returns Success/Failure (not raw values or exceptions)
+- [ ] Returns values on success, raises on failure (no monads)
 - [ ] Has a corresponding contract if it validates input
-- [ ] Uses Do notation for multi-step operations
+- [ ] Uses bang methods (`find_by!`, `create!`) to let exceptions propagate
 
 ### 5. Controller Audit
 
 For each controller:
 - [ ] No business logic (delegates to services)
-- [ ] Uses `handle_service` from ServiceHandler concern (no inline pattern matching)
+- [ ] Actions are simple: call service, render result
 - [ ] Uses `before_action` for resource loading
 - [ ] Uses strong params
-- [ ] `ApplicationController` includes `ServiceHandler` and `ErrorHandler`
-- [ ] `app/controllers/concerns/service_handler.rb` exists
-- [ ] `app/controllers/concerns/error_handler.rb` exists
+- [ ] No inline error handling (ErrorHandler catches exceptions)
 
 ### 6. Naming Audit
 
@@ -88,6 +88,7 @@ Structure:
   [PASS] .rubocop.yml configured
   [FAIL] Missing UUID generator config
   [PASS] Types module exists
+  [PASS] ErrorHandler concern exists
   ...
 
 Models (3 files):
@@ -96,7 +97,7 @@ Models (3 files):
   [WARN] Event - class methods in concern (should use extend)
 
 Services (5 files):
-  [PASS] Users::Create - typed options, Do notation
+  [PASS] Users::Create - typed options, raises on failure
   [FAIL] Orders::Process - untyped options
   ...
 

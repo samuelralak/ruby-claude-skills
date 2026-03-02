@@ -55,16 +55,18 @@ module {Domain}
     option :field, type: Types::Strict::{Type}
 
     def call
-      values = yield validate
+      values = validate!
       # ... steps from user description
-      Success(result)
+      result
     end
 
     private
 
-    def validate
+    def validate!
       result = {Domain}::{Action}Contract.new.call(field:)
-      result.success? ? Success(result.to_h) : Failure(validation: result.errors.to_h)
+      raise ValidationError, result.errors.to_h unless result.success?
+
+      result.to_h
     end
   end
 end
@@ -82,17 +84,16 @@ RSpec.describe {Domain}::{Action} do
   let(:params) { { field: value } }
 
   context "with valid params" do
-    it "returns Success" do
-      expect(result).to be_success
+    it "returns the expected result" do
+      expect(result).to be_a(ExpectedClass)
     end
   end
 
   context "with invalid params" do
     let(:params) { { field: invalid_value } }
 
-    it "returns Failure with validation errors" do
-      expect(result).to be_failure
-      expect(result.failure).to have_key(:validation)
+    it "raises ValidationError" do
+      expect { result }.to raise_error(ValidationError)
     end
   end
 end

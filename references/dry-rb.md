@@ -286,100 +286,6 @@ end
 contract = UniqueEmailContract.new(user_repo: UserRepository.new)
 ```
 
-### Monads Extension
-
-```ruby
-# config/initializers/dry.rb
-Dry::Validation.load_extensions(:monads)
-
-# In service:
-def validate(params)
-  CreateUserContract.new.call(params).to_monad.fmap(&:to_h)
-end
-# Returns Success({...}) or Failure(#<Dry::Validation::Result>)
-```
-
----
-
-## dry-monads -- Result Types
-
-### Core Monads
-
-```ruby
-include Dry::Monads[:result]
-Success(value)                     # wrap success
-Failure(error)                     # wrap failure
-
-include Dry::Monads[:maybe]
-Some(value)                        # wrap present value
-None()                             # represent absence
-
-include Dry::Monads[:try]
-Try { risky_operation }            # catch StandardError
-Try[JSON::ParserError] { parse }   # catch specific errors
-```
-
-### Result Operations
-
-```ruby
-Success(10).bind { |x| Success(x * 2) }     # => Success(20)
-Success(10).bind { |x| Failure(:oops) }      # => Failure(:oops)
-Failure(:err).bind { |x| Success(x * 2) }    # => Failure(:err)
-
-Success(10).fmap { |x| x * 2 }              # => Success(20)
-Failure(:err).fmap { |x| x * 2 }            # => Failure(:err)
-
-Success(10).value_or(0)                      # => 10
-Failure(:err).value_or(0)                    # => 0
-
-Failure(:err).or { Success(0) }              # => Success(0)
-```
-
-### Do Notation
-
-```ruby
-class MyService
-  include Dry::Monads[:result, :do]
-
-  def call(params)
-    values = yield validate(params)      # Failure -> returns immediately
-    user   = yield persist(values)       # Failure -> returns immediately
-    Success(user)                        # only reached if all succeed
-  end
-end
-```
-
-### Pattern Matching (Ruby 3+)
-
-Use hash-style Failure values for consistency:
-
-```ruby
-case result
-in Success(value)
-  handle_success(value)
-in Failure(validation: errors)
-  handle_validation(errors)
-in Failure(not_found: message)
-  handle_not_found(message)
-in Failure
-  handle_unknown
-end
-```
-
-### Maybe -> Result Conversion
-
-```ruby
-Some(42).to_result(:not_found)    # => Success(42)
-None().to_result(:not_found)      # => Failure(:not_found)
-```
-
-### Try -> Result Conversion
-
-```ruby
-Try { Integer("42") }.to_result   # => Success(42)
-Try { Integer("bad") }.to_result  # => Failure(#<ArgumentError>)
-```
-
 ---
 
 ## dry-initializer -- Constructor DSL
@@ -456,7 +362,6 @@ App.config.database_url  # => "postgres://localhost/mydb"
 
 ```ruby
 # Gemfile
-gem "dry-monads",      "~> 1.6"
 gem "dry-validation",  "~> 1.10"
 gem "dry-types",       "~> 1.7"
 gem "dry-initializer", "~> 3.1"

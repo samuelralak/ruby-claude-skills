@@ -84,7 +84,6 @@ Configure `spec/rails_helper.rb` with FactoryBot and Shoulda Matchers.
 
 Add to Gemfile:
 ```ruby
-gem "dry-monads",      "~> 1.6"
 gem "dry-validation",  "~> 1.10"
 gem "dry-types",       "~> 1.7"
 gem "dry-initializer", "~> 3.1"
@@ -97,14 +96,14 @@ Create the foundation files from SKILL.md:
 - `app/types.rb`
 - `app/services/base_service.rb`
 - `app/contracts/application_contract.rb`
-- `config/initializers/dry.rb`
-- `app/controllers/concerns/service_handler.rb`
+- `app/errors/service_error.rb`
+- `app/errors/validation_error.rb`
+- `app/errors/not_found_error.rb`
 - `app/controllers/concerns/error_handler.rb`
 
-Wire up `ApplicationController` to include both concerns:
+Wire up `ApplicationController` to include ErrorHandler:
 ```ruby
 class ApplicationController < ActionController::API  # or Base for non-API
-  include ServiceHandler
   include ErrorHandler
 end
 ```
@@ -129,13 +128,12 @@ Configured:
   - RuboCop (rubocop-rails, rubocop-rspec, rubocop-performance)
   - Brakeman security scanner
   - RSpec + FactoryBot + Shoulda + Faker
-  - dry-monads + dry-validation + dry-types + dry-initializer + dry-struct
-  - BaseService with dry-monads Do notation
+  - dry-validation + dry-types + dry-initializer + dry-struct
+  - BaseService with dry-initializer typed options
   - ApplicationContract base class
   - Types module
-  - ServiceHandler concern (handle_service for result pattern matching)
-  - ErrorHandler concern (rescue_from for common exceptions)
-  - ApplicationController wired with both concerns
+  - Custom error classes (ServiceError, ValidationError, NotFoundError)
+  - ErrorHandler concern (rescue_from for exceptions)
 
 Ready to build.
 ```

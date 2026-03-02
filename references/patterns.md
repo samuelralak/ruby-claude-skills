@@ -65,6 +65,18 @@ module Orders
 end
 ```
 
+### Pattern: Domain-Specific Errors
+
+Define project-specific errors as subclasses of `ServiceError`:
+
+```ruby
+# app/errors/insufficient_funds_error.rb
+class InsufficientFundsError < ServiceError; end
+
+# app/errors/payment_error.rb
+class PaymentError < ServiceError; end
+```
+
 ### Pattern: Transactions
 
 Use `ActiveRecord::Base.transaction` for operations that must succeed together. Bang methods (`update!`, `create!`) raise inside transactions, triggering rollback:

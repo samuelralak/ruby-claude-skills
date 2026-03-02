@@ -6,6 +6,8 @@
 
 ```ruby
 # app/types.rb
+# frozen_string_literal: true
+
 require "dry-types"
 
 module Types

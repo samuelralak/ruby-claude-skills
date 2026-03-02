@@ -567,7 +567,6 @@ module Users
     params do
       required(:name).filled(:string, min_size?: 2)
       required(:email).filled(:string)
-      required(:age).filled(:integer, gt?: 17)
       optional(:phone).maybe(:string)
     end
 
@@ -655,13 +654,13 @@ RSpec.describe Users::CreateContract do
   subject(:result) { described_class.new.call(params) }
 
   context "with valid params" do
-    let(:params) { { name: "Jane", email: "jane@example.com", age: 25 } }
+    let(:params) { { name: "Jane", email: "jane@example.com" } }
 
     it { is_expected.to be_success }
   end
 
   context "when name is missing" do
-    let(:params) { { email: "jane@example.com", age: 25 } }
+    let(:params) { { email: "jane@example.com" } }
 
     it "returns error for name" do
       expect(result.errors.to_h).to include(name: ["is missing"])
